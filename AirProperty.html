@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AQI & Property Depreciation Calculator</title>
+  <style>
+    /* Basic styling for a clean look */
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f4f4f4;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 600px;
+      margin: 20px auto;
+      background: #fff;
+      padding: 20px;
+      border-radius: 5px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    h1, h2, h3 {
+      text-align: center;
+    }
+    form {
+      margin-top: 20px;
+    }
+    label {
+      display: block;
+      margin-bottom: 5px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    input[type="submit"] {
+      padding: 10px 20px;
+      background-color: #007BFF;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+    }
+    input[type="submit"]:hover {
+      background-color: #0056b3;
+    }
+    .result {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #e2e2e2;
+      border-radius: 5px;
+    }
+    .error {
+      color: red;
+    }
+    .methodology {
+      margin-top: 20px;
+      padding: 15px;
+      background-color: #d9edf7;
+      border-radius: 5px;
+      border: 1px solid #bce8f1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AQI & Property Depreciation Calculator</h1>
+    <form id="aqiForm">
+      <label for="pinCode">Enter Pin Code:</label>
+      <input type="text" id="pinCode" name="pinCode" required>
+      <input type="submit" value="Submit">
+    </form>
+    <div id="result" class="result"></div>
+    <div id="methodology" class="methodology" style="display: none;"></div>
+  </div>
+
+  <script>
+    // IMPORTANT: Replace with your actual AQICN API token.
+    const AQICN_API_TOKEN = "3d3a643ec09e5a8eb1a5e981ee04d625f5c062a4";
+
+    // Form submit handler
+    document.getElementById('aqiForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const pinCode = document.getElementById('pinCode').value.trim();
+      if (!pinCode) {
+        showError("Please enter a valid Pin Code.");
+        return;
+      }
+      showMessage("Fetching data, please wait...");
+      try {
+        // Get geographical coordinates for the pin code.
+        const { lat, lon } = await getLatLong(pinCode);
+        if (lat === null || lon === null) {
+          showError("Could not determine geographical coordinates for the provided Pin Code.");
+          return;
+        }
+        // Retrieve the AQI data (AQI, dominant pollutant, and PM2.5) for the coordinates.
+        const aqiData = await getAQI(lat, lon);
+        if (aqiData === null) {
+          showError("Could not retrieve AQI data at this time. Please try again later.");
+          return;
+        }
+        const { aqi, dominantPol, pm25 } = aqiData;
+        // Compute the property depreciation using the enhanced model.
+        const { depreciation, reasoning } = computeDepreciation(aqi, dominantPol, pm25);
+        showResult(pinCode, aqi, depreciation, reasoning);
+        showMethodology();
+      } catch (error) {
+        console.error("Error:", error);
+        showError("An error occurred: " + error.message);
+      }
+    });
+
+    // Fetch geographical coordinates using OpenStreetMap's Nominatim API.
+    async function getLatLong(pinCode) {
+      const url = `https://nominatim.openstreetmap.org/search?postalcode=${encodeURIComponent(pinCode)}&format=json&limit=1`;
+      const response = await fetch(url, { headers: { 'User-Agent': 'AqiApp/1.0' } });
+      if (!response.ok) {
+        throw new Error("Error fetching location data.");
+      }
+      const data = await response.json();
+      if (data.length === 0) {
+        return { lat: null, lon: null };
+      }
+      console.log("Geocoding result:", data[0]);
+      return {
+        lat: parseFloat(data[0].lat),
+        lon: parseFloat(data[0].lon)
+      };
+    }
+
+    // Fetch AQI data using the AQICN API.
+    async function getAQI(lat, lon) {
+      const url = `https://api.waqi.info/feed/geo:${lat};${lon}/?token=${AQICN_API_TOKEN}`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.error("AQI API network error:", response.status);
+        throw new Error("Error fetching AQI data.");
+      }
+      const data = await response.json();
+      console.log("AQI API response:", data);
+      if (data.status !== "ok") {
+        console.error("AQI API returned error status:", data);
+        return null;
+      }
+      const aqi = parseInt(data.data.aqi);
+      const dominantPol = data.data.dominentpol || "unknown";
+      // Retrieve PM2.5 value from the 'iaqi' object, if available.
+      const pm25 = data.data.iaqi && data.data.iaqi.pm25 ? data.data.iaqi.pm25.v : null;
+      return { aqi, dominantPol, pm25 };
+    }
+
+    // Compute property depreciation based on AQI and PM2.5 using an enhanced model,
+    // and generate a detailed reasoning string.
+    function computeDepreciation(aqi, dominantPol, pm25) {
+      // --- Base Depreciation from AQI ---
+      const baseline = 50;   // AQI at or below 50 implies good air quality.
+      const maxAqi = 300;    // AQI of 300 (or more) represents the worst-case scenario.
+      const maxDep = 30;     // Maximum base depreciation percentage from AQI.
+      let baseDep = 0;
+      if (aqi <= baseline) {
+        baseDep = 0;
+      } else {
+        baseDep = ((Math.min(aqi, maxAqi) - baseline) / (maxAqi - baseline)) * maxDep;
+      }
+      
+      // --- Additional Depreciation from PM2.5 ---
+      let additionalDep = 0;
+      let pm25Reason = "";
+      if (pm25 !== null) {
+        const safeThreshold = 12;  // Safe threshold for PM2.5 in μg/m³.
+        const alpha = 0.5;         // Weight factor for PM2.5 impact.
+        const maxDep_pm25 = 10;    // Maximum additional depreciation percentage from PM2.5.
+        if (pm25 > safeThreshold) {
+          additionalDep = Math.min(maxDep_pm25, (pm25 - safeThreshold) * alpha);
+          pm25Reason = `Additionally, the PM2.5 concentration is ${pm25} μg/m³, exceeding the safe threshold of ${safeThreshold} μg/m³, which adds an extra estimated depreciation of ${additionalDep.toFixed(1)}%. `;
+        } else {
+          pm25Reason = `The PM2.5 concentration is ${pm25} μg/m³, which is within safe limits. `;
+        }
+      } else {
+        pm25Reason = `PM2.5 data is not available. `;
+      }
+      
+      // --- Total Depreciation ---
+      let totalDep = baseDep + additionalDep;
+      
+      // Categorize the air quality based on standard ranges.
+      let category = "";
+      if (aqi <= 100) category = "Moderate";
+      else if (aqi <= 150) category = "Unhealthy for Sensitive Groups";
+      else if (aqi <= 200) category = "Unhealthy";
+      else if (aqi <= 300) category = "Very Unhealthy";
+      else category = "Hazardous";
+      
+      // Build detailed reasoning.
+      let reasoning = `The current AQI is ${aqi} (${category} category), with the dominant pollutant being ${dominantPol}. Based solely on the AQI, the estimated base depreciation is ${baseDep.toFixed(1)}%. ${pm25Reason}Thus, when accounting for both the overall air quality and the specific impact of PM2.5, the total estimated property depreciation is approximately ${totalDep.toFixed(1)}%.`;
+      
+      return { depreciation: totalDep, reasoning };
+    }
+
+    // Display the results on the page.
+    function showResult(pinCode, aqi, depreciation, reasoning) {
+      const resultDiv = document.getElementById('result');
+      resultDiv.innerHTML = `
+        <h2>Results for Pin Code: ${pinCode}</h2>
+        <p><strong>Air Quality Index (AQI):</strong> ${aqi}</p>
+        <p><strong>Estimated Property Depreciation:</strong> ${depreciation.toFixed(1)}%</p>
+        <p><strong>Reasoning:</strong> ${reasoning}</p>
+      `;
+    }
+
+    // Display the methodology section.
+    function showMethodology() {
+      const methodologyDiv = document.getElementById('methodology');
+      const methodologyText = `
+        <h3>Methodology</h3>
+        <p>
+          <strong>Step 1:</strong> The entered Pin Code is converted into geographical coordinates (latitude and longitude)
+          using the OpenStreetMap Nominatim API.
+        </p>
+        <p>
+          <strong>Step 2:</strong> The AQICN API is called with these coordinates to retrieve:
+          <br> • The overall Air Quality Index (AQI)
+          <br> • The dominant pollutant
+          <br> • The PM2.5 concentration (if available)
+        </p>
+        <p>
+          <strong>Step 3:</strong> An enhanced depreciation model is applied that consists of two parts:
+          <ul>
+            <li>
+              <em>Base Depreciation (AQI Component):</em>
+              <br>
+              - For an AQI of 50 or below, air quality is considered “Good” and results in 0% depreciation.
+              <br>
+              - For AQI values between 50 and 300, a linear model is used:
+              <br>
+              &nbsp;&nbsp;Base Depreciation = ((min(AQI, 300) - 50) / (300 - 50)) × 30%
+              <br>
+              This means that at an AQI of 300, the maximum base depreciation is capped at 30%.<br>
+              The choices of 50 (good quality) and 300 (extremely poor quality) are based on standard AQI categorizations.
+            </li>
+            <li>
+              <em>Additional PM2.5 Impact:</em>
+              <br>
+              - PM2.5 is a critical pollutant known for its severe health effects.
+              <br>
+              - A safe threshold for PM2.5 is set at 12 μg/m³. If the PM2.5 concentration exceeds this threshold, an additional depreciation is applied:
+              <br>
+              &nbsp;&nbsp;Additional Depreciation = min(10%, (PM2.5 - 12) × 0.5)
+              <br>
+              This means that for every μg/m³ above 12, an extra 0.5% depreciation is added, capped at 10%.
+            </li>
+          </ul>
+        </p>
+        <p>
+          <strong>Step 4:</strong> The total estimated depreciation is the sum of the base depreciation and the additional PM2.5 impact.
+          This approach allows the model to capture both general air quality effects and the specific impact of fine particulate matter.
+        </p>
+        <p>
+          <strong>Formula Reasoning:</strong><br>
+          The linear base model was chosen for its simplicity and ease of interpretation, mapping real-world AQI ranges to a depreciation percentage.
+          The additional PM2.5 factor recognizes that PM2.5 has a disproportionate impact on health and property desirability.
+          While this model is simplified, it provides a transparent estimate using publicly available data.
+        </p>
+        <p>
+          Note: Real-world property valuations are influenced by many additional factors; this model offers a basic estimate of the potential impact of air quality.
+        </p>
+      `;
+      methodologyDiv.style.display = "block";
+      methodologyDiv.innerHTML = methodologyText;
+    }
+
+    // Display an error message.
+    function showError(message) {
+      const resultDiv = document.getElementById('result');
+      resultDiv.innerHTML = `<p class="error">${message}</p>`;
+      document.getElementById('methodology').style.display = "none";
+    }
+
+    // Display a general message.
+    function showMessage(message) {
+      const resultDiv = document.getElementById('result');
+      resultDiv.innerHTML = `<p>${message}</p>`;
+      document.getElementById('methodology').style.display = "none";
+    }
+  </script>
+</body>
+</html>
